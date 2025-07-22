@@ -1,0 +1,7 @@
+google-adk
+google-generativeai
+python-dotenv
+tenacity
+GitPython
+aiofiles>=23.2.1
+pydantic>=2.0.0
