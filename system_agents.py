@@ -35,7 +35,6 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.sessions import InMemorySessionService, BaseSessionService, Session
 from google.adk.artifacts.base_artifact_service import BaseArtifactService
 
-logging.basicConfig(level=os.getenv("LOGGING_LEVEL", "INFO").upper())
 logger = logging.getLogger(__name__)
 
 logger.info(f"Attempting to load .env from: {dotenv_path}")
