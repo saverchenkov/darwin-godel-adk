@@ -496,6 +496,14 @@ class PlannerAgent(LlmAgent):
         final_response_text_parts = []
         try:
             async for event in super()._run_async_impl(context):
+                if event.error_code:
+                    error_message = f"PlannerAgent LLM call failed with error code: {event.error_code}."
+                    logger.error(error_message)
+                    # Overwrite any partial text with a clear error message for the Executor.
+                    final_response_text_parts = [f"1. CRITICAL: Planning phase failed. Error: {event.error_code}. Cannot proceed."]
+                    yield event
+                    break  # Stop processing further events after a critical error.
+
                 current_text_part = None
                 if event.content and event.content.parts:
                     for part in event.content.parts:
@@ -506,7 +514,7 @@ class PlannerAgent(LlmAgent):
                 if current_text_part:
                     final_response_text_parts.append(current_text_part)
                     logger.debug(f"{self.name} event content processed and appended. Current part snippet: {current_text_part[:100]}...")
-                # We still yield the event even if no text part, it might be a tool call or other type
+                
                 yield event
         finally:
             self.instruction = original_instruction # Restore original unformatted instruction
