@@ -844,6 +844,7 @@ class TopLevelOrchestratorAgent(BaseAgent):
             
             context.session.state["learnings"] = [] # Initialize learnings list
             context.session.state["current_loop"] = 0 # Explicitly set session's loop counter for this run
+            context.session.state["execution_id"] = context.session.id # Explicitly set execution_id
         
         logger.info(f"{self.name}: Session state before critical checks: {dict(context.session.state)}")
 
