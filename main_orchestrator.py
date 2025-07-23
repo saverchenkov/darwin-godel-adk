@@ -8,6 +8,7 @@ import sys
 import time
 import traceback
 import random
+import argparse
 from pathlib import Path
 from typing import List, Optional
 from queue import Empty as QueueEmptyException
@@ -153,8 +154,9 @@ def child_process_target(ipc_queue: multiprocessing.Queue):
 
 # --- Main Orchestrator Logic ---
 class MainOrchestrator:
-    def __init__(self):
+    def __init__(self, run_once=False):
         """Initializes the MainOrchestrator."""
+        self.run_once = run_once
         self.child_process: Optional[multiprocessing.Process] = None
         self.ipc_queue: multiprocessing.Queue = multiprocessing.Queue()
         self.current_commit_hash: Optional[str] = None
@@ -327,6 +329,9 @@ class MainOrchestrator:
         """
         logger.error("Child process failed or reported critical error.")
         self.restart_count += 1
+        if self.run_once:
+            logger.critical("Child process failed during --run-once execution. Aborting.")
+            sys.exit(1)
         if self.restart_count > MAX_CHILD_RESTARTS:
             logger.critical(f"Child process failed {self.restart_count} times. Max restarts reached. Aborting.")
             # Potentially notify admin or take other drastic actions
@@ -412,6 +417,9 @@ class MainOrchestrator:
                 
                 # Optional: Add a delay between evolutionary cycles
                 time.sleep(5)
+                if self.run_once:
+                    logger.info(" --run-once flag detected. Terminating after one iteration.")
+                    break
 
         except KeyboardInterrupt:
             logger.info("Ctrl+C received. Shutting down Main Orchestrator...")
@@ -430,5 +438,9 @@ if __name__ == "__main__":
         logger.critical("Please ensure system_agents.py is created, possibly by Roo or from a template.")
         sys.exit(1)
         
-    orchestrator = MainOrchestrator()
+    parser = argparse.ArgumentParser(description="Main Orchestrator for the Darwin Gödel Machine")
+    parser.add_argument("--run-once", action="store_true", help="Run the orchestrator for a single iteration and then exit.")
+    args = parser.parse_args()
+        
+    orchestrator = MainOrchestrator(run_once=args.run_once)
     orchestrator.run()
