@@ -89,14 +89,16 @@ graph TD
 ### 2.2 Key Components
 - **Main Orchestrator Process**: Manages the Child Process lifecycle, versions the entire **Agent Archive** and [`knowledge.md`](knowledge.md), handles code/prompt reloads by restarting the child, and initiates rollbacks on critical failures.
 - **Child Execution Process**: An isolated process that initializes an ADK environment and runs the DGM evolutionary loop. This loop includes parent selection, self-modification, evaluation, and learning.
-- **Agent Archive**: A version-controlled repository (e.g., a directory structure managed by Git) containing all viable, self-generated agent variants. Each variant is a complete, executable version of [`system_agents.py`](system_agents.py). This archive serves as the gene pool for the evolutionary process.
+- **Agent Archive**: A version-controlled repository managed by Git, where each agent variant is a commit. The archive contains all viable, self-generated agent variants, with each variant being a complete, executable version of [`system_agents.py`](system_agents.py). This archive serves as the gene pool for the evolutionary process.
 - **Agents**: `PlannerAgent`, `ExecutorAgent`, `LearningAgent` with redefined roles (see Section 3).
 - **Knowledge & Inputs**: [`input.md`](input.md), [`knowledge.md`](knowledge.md), [`.env`](.env).
 
 ### 2.3 DGM Evolutionary Workflow
-1.  **Initialization**: The Main Orchestrator starts the Child Process, which loads the agent population from the Agent Archive.
-2.  **Parent Selection**: The system selects one or more "parent" agents from the archive based on a strategy in [`knowledge.md`](knowledge.md) that balances performance and novelty.
-3.  **Self-Modification (Planner & Executor)**:
+1.  **Initialization**: The Main Orchestrator initializes the evolutionary loop.
+2.  **Parent Selection (Main Orchestrator)**: The Main Orchestrator selects a "parent" agent version by analyzing the Git tags in the Agent Archive. It uses a strategy defined in [`knowledge.md`](knowledge.md) that balances performance and novelty. It then checks out the selected agent's version of `system_agents.py` and `knowledge.md`.
+3.  **Execution (Child Process)**: The Main Orchestrator starts the Child Process, which runs the selected parent agent to generate a new "child" agent variant.
+    a. The `PlannerAgent` analyzes the parent and produces a specification for a modification.
+    b. The `ExecutorAgent` implements the changes, producing a new "child" agent.
     a.  The `PlannerAgent` analyzes the selected parent and produces a high-level specification for a new feature or modification.
     b.  The `ExecutorAgent` receives this specification and implements the changes on the parent's source code, producing a new "child" agent.
 4.  **Evaluation**: The new child agent is evaluated on a coding benchmark to get a fitness score. Only viable agents are kept.
@@ -135,7 +137,7 @@ graph TD
 ## 4. Implementation Guide
 
 ### 4.1 Main Orchestrator Process Responsibilities
-The Main Orchestrator is responsible for managing the **Agent Archive**. This will be implemented as a Git repository, where each agent variant is a commit. The Orchestrator will handle committing new agent versions and using Git for rollbacks in case of catastrophic failure.
+The Main Orchestrator is responsible for managing the **Agent Archive** and the entire **evolutionary loop**. This includes selecting parent agents from the archive, checking out their versions, launching the child process for execution, and upon successful completion, committing and tagging the new agent variant. It also handles rollbacks in case of catastrophic failure.
 
 ### 4.2 Child Process Management and ADK Integration
 
@@ -227,13 +229,13 @@ The Main Orchestrator is responsible for managing the **Agent Archive**. This wi
     -   Alternatively, a reload triggers a fresh re-planning by the (newly loaded) `PlannerAgent` using the latest [`knowledge.md`](knowledge.md). This is the simpler default assumption. If a more persistent state for the *current plan* across reloads is ever required (i.e., resuming an interrupted plan rather than starting anew), this would necessitate significant enhancements to the state saving and re-injection mechanisms described above and is considered a complex future extension.
 
 ### 4.8 Agent Archive Management
-- **Structure:** The Agent Archive will be a directory where each subdirectory represents a unique agent variant, named with a version or ID number. Each subdirectory will contain a complete, executable copy of [`system_agents.py`](system_agents.py) for that variant.
-- **Versioning:** The entire archive directory will be managed by Git. The Main Orchestrator will commit new agent versions to the repository.
-- **Metadata:** Each agent's subdirectory will contain a `metadata.json` file storing its performance score, its parent agent's ID, and the generation it belongs to.
+- **Structure:** The Agent Archive is managed directly within the Git repository. There is no separate directory structure for the archive.
+- **Versioning:** Each version of the agent is captured as a Git commit. The Main Orchestrator commits changes to [`system_agents.py`](system_agents.py) and [`knowledge.md`](knowledge.md) after successful modifications. Git tags are used to mark significant versions, such as stable milestones or successful evolutionary steps, creating a clear and robust version history.
+- **Metadata:** Performance scores and other relevant metadata are not stored in separate files but can be inferred from the commit history and the contents of [`knowledge.md`](knowledge.md) at each tagged version.
 
 ### 4.9 Parent Selection and Evaluation
-- **Parent Selection:** The Child Process will implement the parent selection logic. It will read the metadata from all agents in the archive and apply the selection strategy defined in [`knowledge.md`](knowledge.md) to choose a parent.
-- **Evaluation:** After a new child agent is generated, the Child Process will be responsible for running it against the benchmark, scoring its performance, and creating its new entry in the Agent Archive.
+- **Parent Selection:** The **Main Orchestrator** implements the parent selection logic. It lists all agent archive tags from Git, parses metadata (like performance scores) from tag messages, and applies the selection strategy defined in [`knowledge.md`](knowledge.md) to choose a parent.
+- **Evaluation:** After a new child agent is generated, the **Child Process** is responsible for running it against the benchmark and scoring its performance. The outcome is reported back to the Main Orchestrator, which then commits and tags the new version, adding it to the Agent Archive.
 
 ## 5. Knowledge Management (knowledge.md)
 

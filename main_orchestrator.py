@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 import traceback
+import random
 from pathlib import Path
 from typing import List, Optional
 from queue import Empty as QueueEmptyException
@@ -29,13 +30,13 @@ logger = logging.getLogger("MainOrchestrator")
 logger.info(f"Logging level set to {LOGGING_LEVEL}")
 
 # --- Configuration ---
-SYSTEM_AGENTS_FILE = Path("system_agents.py")
-KNOWLEDGE_FILE = Path("knowledge.md")
-INPUT_FILE = Path("input.md") # Though child process reads this directly
+SYSTEM_AGENTS_FILE = Path(os.getenv("SYSTEM_AGENTS_FILE", "system_agents.py"))
+KNOWLEDGE_FILE = Path(os.getenv("KNOWLEDGE_FILE", "knowledge.md"))
+INPUT_FILE = Path(os.getenv("INPUT_FILE", "input.md")) # Though child process reads this directly
 GIT_COMMIT_USER_NAME = os.getenv("GIT_COMMIT_USER_NAME", "AdaptiveAgentSystem")
 GIT_COMMIT_USER_EMAIL = os.getenv("GIT_COMMIT_USER_EMAIL", "agent@example.com")
-MAX_CHILD_RESTARTS = 3 # Max restarts before giving up on a failed state
-CHILD_PROCESS_TIMEOUT_SECONDS = 300 # Timeout for child process operations
+MAX_CHILD_RESTARTS = int(os.getenv("MAX_CHILD_RESTARTS", 3)) # Max restarts before giving up on a failed state
+CHILD_PROCESS_TIMEOUT_SECONDS = int(os.getenv("CHILD_PROCESS_TIMEOUT_SECONDS", 300)) # Timeout for child process operations
 
 # --- Git Helper Functions ---
 def get_git_repo() -> Optional[git.Repo]:
@@ -113,6 +114,18 @@ def git_rollback_files(files: List[Path], commit_hash_or_tag: str) -> bool:
         logger.error(f"Rollback failed: {e}")
         return False
 
+def git_get_tag_message(tag_name: str) -> Optional[str]:
+    """Gets the message of a specific tag."""
+    repo = get_git_repo()
+    if not repo:
+        return None
+    try:
+        tag = repo.tags[tag_name]
+        return tag.tag.message
+    except (KeyError, AttributeError):
+        logger.warning(f"Could not find tag or message for tag: {tag_name}")
+        return None
+
 # --- Child Process Target Function ---
 def child_process_target(ipc_queue: multiprocessing.Queue):
     """
@@ -141,13 +154,13 @@ def child_process_target(ipc_queue: multiprocessing.Queue):
 # --- Main Orchestrator Logic ---
 class MainOrchestrator:
     def __init__(self):
+        """Initializes the MainOrchestrator."""
         self.child_process: Optional[multiprocessing.Process] = None
         self.ipc_queue: multiprocessing.Queue = multiprocessing.Queue()
         self.current_commit_hash: Optional[str] = None
         self.last_good_commit_hash: Optional[str] = None
         self.restart_count = 0
-
-        get_git_repo()
+        self.repo = get_git_repo()
         # Initial commit of agent files if they exist and are not yet committed
         # This helps establish a baseline.
         initial_files_to_commit = []
@@ -158,11 +171,63 @@ class MainOrchestrator:
                 self.last_good_commit_hash = git_get_current_commit_hash()
                 logger.info(f"Initial commit successful. Last good commit: {self.last_good_commit_hash}")
 
+    def _list_agent_tags(self) -> List[str]:
+        """Lists all agent archive tags."""
+        if not self.repo:
+            return []
+        return [tag.name for tag in self.repo.tags if tag.name.startswith("agent-archive-")]
 
-    def start_child_process(self):
+    def _get_performance_from_tag(self, tag_name: str) -> float:
+        """Parses performance score from tag message."""
+        message = git_get_tag_message(tag_name)
+        if not message:
+            return 0.0
+        # This is a placeholder implementation. A more robust solution would
+        # parse a structured message, e.g., JSON.
+        try:
+            # Example message: "Agent self-modification: system_agents.py. Performance: 0.85"
+            performance_str = message.split("Performance:")[1].strip()
+            return float(performance_str)
+        except (IndexError, ValueError):
+            return 0.0
+
+    def _select_parent_agent(self) -> Optional[str]:
+        """Selects a parent agent from the archive."""
+        tags = self._list_agent_tags()
+        if not tags:
+            logger.info("No agent tags found, starting from current state.")
+            return None
+
+        # This is a simplified selection logic. A more advanced implementation
+        # would use the formula from the DGM paper.
+        # For now, we'll do a weighted random selection based on performance.
+        weights = [self._get_performance_from_tag(tag) for tag in tags]
+        
+        # Add a small base weight to allow selection of zero-performance agents
+        weights = [w + 0.1 for w in weights]
+
+        try:
+            selected_tag = random.choices(tags, weights=weights, k=1)[0]
+            logger.info(f"Selected parent agent tag: {selected_tag}")
+            return selected_tag
+        except IndexError:
+            return None
+
+    def start_child_process(self, tag_name: Optional[str] = None):
+        """
+        Checks out the specified agent version and starts the child process.
+        If tag_name is None, it runs from the current state.
+        """
         if self.child_process and self.child_process.is_alive():
             logger.warning("Child process already running. Not starting another.")
             return
+
+        if tag_name:
+            logger.info(f"Checking out agent version: {tag_name}")
+            files_to_checkout = [SYSTEM_AGENTS_FILE, KNOWLEDGE_FILE]
+            if not git_rollback_files(files_to_checkout, tag_name):
+                logger.error(f"Failed to checkout tag {tag_name}. Aborting child process start.")
+                return
 
         logger.info("Main Orchestrator: Starting child ADK process...")
         try:
@@ -188,6 +253,12 @@ class MainOrchestrator:
 
 
     def handle_child_message(self, message: dict):
+        """
+        Handles messages received from the child process via the IPC queue.
+
+        Args:
+            message: The message dictionary received from the child.
+        """
         msg_type = message.get("type")
         logger.info(f"Main Orchestrator: Received message from child: {msg_type}")
         logger.debug(f"Full message: {message}")
@@ -208,8 +279,8 @@ class MainOrchestrator:
                 if git_commit_files(files_to_commit, commit_message):
                     self.last_good_commit_hash = git_get_current_commit_hash()
                     logger.info(f"Successfully committed changes. New last good commit: {self.last_good_commit_hash}")
-                    # Tag this commit as a milestone (optional)
-                    # git_tag_commit(f"iteration-{self.last_good_commit_hash[:7]}-stable")
+                    tag_name = f"agent-archive-{time.strftime('%Y%m%d-%H%M%S')}"
+                    git_tag_commit(tag_name, f"Agent self-modification: {file_path}")
                 else:
                     logger.error("Failed to commit changes after modification. Potential desync.")
             
@@ -235,6 +306,8 @@ class MainOrchestrator:
                 if git_commit_files([KNOWLEDGE_FILE], f"Task Outcome: Status {status}. See knowledge.md for analysis."):
                     self.last_good_commit_hash = git_get_current_commit_hash()
                     logger.info(f"Successfully committed knowledge.md. New last good commit: {self.last_good_commit_hash}")
+                    tag_name = f"task-complete-{time.strftime('%Y%m%d-%H%M%S')}"
+                    git_tag_commit(tag_name, f"Task outcome: {status}")
                 else:
                     logger.warning("Failed to commit knowledge.md after task outcome.")
 
@@ -249,6 +322,9 @@ class MainOrchestrator:
             logger.warning(f"Received unknown message type from child: {msg_type}")
 
     def handle_child_failure(self):
+        """
+        Handles critical failures in the child process, including rollback and restart.
+        """
         logger.error("Child process failed or reported critical error.")
         self.restart_count += 1
         if self.restart_count > MAX_CHILD_RESTARTS:
@@ -286,6 +362,7 @@ class MainOrchestrator:
 
 
     def terminate_child_process(self):
+        """Terminates the child process gracefully, with a fallback to a force kill."""
         if self.child_process and self.child_process.is_alive():
             logger.info(f"Terminating child process PID: {self.child_process.pid}...")
             # Send SIGTERM first for graceful shutdown
@@ -304,35 +381,37 @@ class MainOrchestrator:
 
 
     def run(self):
+        """
+        The main run loop for the orchestrator.
+        Orchestrates the evolutionary loop of parent selection, execution, and versioning.
+        """
         logger.info("Main Orchestrator started. Press Ctrl+C to exit.")
-        self.start_child_process()
 
         try:
-            while True:
-                if self.child_process and not self.child_process.is_alive():
+            while True: # Main evolutionary loop
+                selected_tag = self._select_parent_agent()
+                self.start_child_process(tag_name=selected_tag)
+
+                # Wait for the child process to complete or fail
+                while self.child_process and self.child_process.is_alive():
+                    try:
+                        message = self.ipc_queue.get(timeout=1.0)
+                        self.handle_child_message(message)
+                    except QueueEmptyException:
+                        pass
+                    time.sleep(0.1)
+
+                # Post-run checks
+                if self.child_process: # If it was started
                     exit_code = self.child_process.exitcode
-                    logger.warning(f"Child process exited unexpectedly with code: {exit_code}.")
-                    # If queue is empty, it might have crashed before sending error.
-                    # If it exited with 0, it might have completed its run without reload.
-                    if exit_code != 0 and self.ipc_queue.empty(): # Assume crash if non-zero and no message
+                    if exit_code != 0 and self.ipc_queue.empty():
+                        logger.warning(f"Child process exited unexpectedly with code: {exit_code}.")
                         self.handle_child_failure()
-                    elif exit_code == 0 and self.ipc_queue.empty():
-                        logger.info("Child process exited cleanly (code 0) with no pending messages. Assuming completion of current objectives.")
-                        # Decide if to restart for new objectives or terminate. For now, just log.
-                        # Could implement a file watcher on input.md or a timer to re-check.
-                        # For this PRD, a clean exit means it's done with its internal loops.
-                        # We might want to restart it to pick up new input.md content.
-                        logger.info("Restarting child process to check for new objectives in input.md...")
-                        self.start_child_process()
-
-
-                try:
-                    message = self.ipc_queue.get(timeout=1.0) # Check for messages
-                    self.handle_child_message(message)
-                except QueueEmptyException: # Use imported exception
-                    pass # No message, continue loop
+                    else:
+                        logger.info("Child process finished its run.")
                 
-                time.sleep(0.1) # Small delay to prevent busy-waiting
+                # Optional: Add a delay between evolutionary cycles
+                time.sleep(5)
 
         except KeyboardInterrupt:
             logger.info("Ctrl+C received. Shutting down Main Orchestrator...")
