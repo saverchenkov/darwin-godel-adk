@@ -150,7 +150,7 @@ Perform the following:
 
 IMPORTANT: When you generate the content for 'knowledge.md', if that content includes any text that uses curly braces (e.g., in Python f-strings or JSON-like structures), you MUST ensure these curly braces are escaped by doubling them. This is because the content of 'knowledge.md' will be used in later prompt formatting, and unescaped single curly braces will cause errors.
 
-Output your analysis, the 'Capability Gap Report' (if applicable), and the complete updated content for 'knowledge.md' (with necessary curly braces escaped).
+Output your analysis, the 'Capability Gap Report' (if applicable), and the complete updated content for 'knowledge.md' (with necessary curly braces escaped). Your response should be a JSON object with the keys "analysis_summary", "capability_gap_report", and "updated_knowledge_md".
 """
 
 
@@ -673,11 +673,13 @@ class LearningAgent(LlmAgent):
             logger.error(f"{self.name}: Exception reading knowledge.md: {e}")
             k_summary, k_content_for_llm = f"Error reading knowledge.md: {e}", ""
         
+        execution_id = context.session.id if context.session else "unknown_session"
         formatted_instruction = self.instruction_template.format(
             execution_outcomes_summary_json=json.dumps(executor_outcome),
             failure_log_summary=json.dumps(fail_log),
             learnings_list_json=json.dumps(learnings),
-            current_knowledge=k_summary.replace('{', '{{').replace('}', '}}')
+            current_knowledge=k_summary.replace('{', '{{').replace('}', '}}'),
+            execution_id=execution_id
         )
         
         original_instruction = self.instruction
