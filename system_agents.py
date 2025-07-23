@@ -134,6 +134,7 @@ Example JSON response if plan processed and system_agents.py was NOT modified:
 
 LEARNING_INSTRUCTION_V1 = """
 You are a master LearningAgent. Your goal is to evolve 'knowledge.md' to optimize this system's performance and identify needs for architectural evolution.
+The current execution ID is: {execution_id}. When you generate content for 'knowledge.md', use this ID where appropriate, for example in headers like '## Execution Analysis - {execution_id}'.
 Analyze the following execution outcomes from the ExecutorAgent: {execution_outcomes_summary_json}
 (Optional) Rollback/Failure Log from Main Orchestrator: {failure_log_summary}
 (Optional) Potential Learnings/Observations from other agents: {learnings_list_json}
