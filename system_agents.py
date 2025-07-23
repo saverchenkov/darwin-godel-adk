@@ -6,7 +6,7 @@ import re
 import mimetypes
 import subprocess
 import traceback
-import shutil # <-- Added import
+import shutil
 from typing import Any, List, Optional, Tuple, AsyncGenerator, Callable
 from typing_extensions import override
 import sys
@@ -34,8 +34,6 @@ from google.adk.agents.invocation_context import InvocationContext
 
 from google.adk.sessions import InMemorySessionService, BaseSessionService, Session
 from google.adk.artifacts.base_artifact_service import BaseArtifactService
-# from google.adk.artifacts import InMemoryArtifactService # No longer directly used here
-# from .file_system_artifact_service import FileSystemArtifactService # <-- Will be removed as class is merged
 
 logging.basicConfig(level=os.getenv("LOGGING_LEVEL", "INFO").upper())
 logger = logging.getLogger(__name__)
@@ -176,7 +174,7 @@ def _write_file_impl(path: str, content: str) -> str:
         return f"Error writing {path}: {e}"
 
 def _execute_command_impl(command: str) -> str:
-    logger.info(f"Tool `_execute_command_impl`: Executing: {command}")
+    logger.info(f"Executing command: {command}")
     try:
         result = subprocess.run(command, shell=True, capture_output=True, text=True, check=False)
         if result.returncode != 0:
@@ -200,8 +198,6 @@ def _unsafe_execute_code_impl(code: str, tool_context: Optional[InvocationContex
             code_execution_input=code_execution_input_obj
         )
         
-        created_artifact: Optional[Any] = None # Changed from adk_types.Artifact to Any
-
         output_parts = []
         if code_execution_result.stdout:
             output_parts.append(f"Stdout:\n{code_execution_result.stdout}")
@@ -228,7 +224,7 @@ def _unsafe_execute_code_impl(code: str, tool_context: Optional[InvocationContex
         else:
             output = "\n".join(output_parts)
             
-        logger.info(f"Tool `_unsafe_execute_code_impl`: Execution result: {output[:500]}...")
+        logger.info(f"Code execution result (first 500 chars): {output[:500]}...")
         return output.strip()
 
     except Exception as e:
@@ -268,8 +264,6 @@ execute_local_code_tool = CustomFunctionTool(
     declaration=execute_local_code_declaration
 )
 
-
-# Merged FileSystemArtifactService class
 class FileSystemArtifactService(BaseArtifactService, BaseModel):
   """A file system-based implementation of the artifact service."""
 
@@ -278,7 +272,7 @@ class FileSystemArtifactService(BaseArtifactService, BaseModel):
   def model_post_init(self, __context: Any) -> None:
     """Ensure the base storage path exists after Pydantic initialization."""
     os.makedirs(self.base_storage_path, exist_ok=True)
-    logger.info(f"FileSystemArtifactService initialized. Base storage path: {os.path.abspath(self.base_storage_path)}")
+    logger.info(f"File artifact storage initialized at: {os.path.abspath(self.base_storage_path)}")
 
   def _file_has_user_namespace(self, filename: str) -> bool:
     """Checks if the filename has a user namespace."""
@@ -344,7 +338,7 @@ class FileSystemArtifactService(BaseArtifactService, BaseModel):
         else:
           await f.write("application/octet-stream")
 
-      logger.info(f"Saved artifact '{filename}' version {new_version} to {version_path}")
+      logger.info(f"Saved artifact '{filename}' (version {new_version}) to {version_path}")
       return new_version
     except Exception as e:
       logger.error(f"Error saving artifact {filename} version {new_version}: {e}")
@@ -396,7 +390,7 @@ class FileSystemArtifactService(BaseArtifactService, BaseModel):
       async with aiofiles.open(mimetype_file_path, "r", encoding="utf-8") as f:
         mime_type_str = await f.read()
       
-      logger.info(f"Loaded artifact '{filename}' version {target_version} from {version_path}")
+      logger.info(f"Loaded artifact '{filename}' (version {target_version}) from {version_path}")
       return adk_types.Part(inline_data=adk_types.Blob(mime_type=mime_type_str, data=data_bytes))
     except Exception as e:
       logger.error(f"Error loading artifact {filename} version {target_version}: {e}")
@@ -436,7 +430,7 @@ class FileSystemArtifactService(BaseArtifactService, BaseModel):
     if await aios.path.isdir(artifact_base_dir):
       try:
         await asyncio.to_thread(shutil.rmtree, artifact_base_dir)
-        logger.info(f"Deleted artifact '{filename}' and all its versions from {artifact_base_dir}")
+        logger.info(f"Deleted artifact '{filename}' from {artifact_base_dir}")
       except Exception as e:
         logger.error(f"Error deleting artifact {filename}: {e}")
         raise
@@ -473,23 +467,19 @@ class PlannerAgent(LlmAgent):
         self.instruction = self.instruction_template # Will be formatted in _run_async_impl
         self.tools = tools or []
         self.model = os.getenv(model_name_env_var, default_model_name)
-        logger.info(f"{self.name} initialized with model: {self.model} (from env var '{model_name_env_var}' or default)")
+        logger.info(f"'{self.name}' initialized with model '{self.model}'.")
 
     async def _run_async_impl(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
-        logger.info(f"{self.name}: Starting run...")
-        logger.info(f"{self.name}: Context session ID: {context.session.id if context.session else 'No session in context'}")
-        logger.info(f"{self.name}: Full session state at start of PlannerAgent run: {dict(context.session.state) if context.session else 'No session state'}")
-
-        logger.info(f"{self.name}: Starting run...")
-        logger.info(f"{self.name}: Context session ID: {context.session.id if context.session else 'No session in context'}")
-        logger.info(f"{self.name}: Full session state at start of PlannerAgent run: {dict(context.session.state) if context.session else 'No session state'}")
+        logger.info(f"'{self.name}' is starting its run.")
+        logger.debug(f"{self.name}: Context session ID: {context.session.id if context.session else 'No session in context'}")
+        logger.debug(f"{self.name}: Full session state at start of PlannerAgent run: {dict(context.session.state) if context.session else 'No session state'}")
 
         objective_from_state = context.session.state.get("objective", "Not specified")
         knowledge_from_state = context.session.state.get("knowledge", "None available")
         
-        logger.info(f"{self.name}: Objective from session state for instruction formatting: '{objective_from_state}'")
+        logger.info(f"'{self.name}' received objective: '{objective_from_state}'")
         logger.debug(f"{self.name}: Full objective string from state: {objective_from_state[:500]}...")
-        logger.info(f"{self.name}: Knowledge from session state for instruction formatting (first 200 chars): '{knowledge_from_state[:200]}...'")
+        logger.info(f"'{self.name}' received knowledge (first 200 chars): '{knowledge_from_state[:200]}...'")
         
         objective = objective_from_state
         knowledge = knowledge_from_state
@@ -523,7 +513,7 @@ class PlannerAgent(LlmAgent):
             self.instruction = original_instruction # Restore original unformatted instruction
         
         final_response_str = "".join(final_response_text_parts).strip()
-        logger.info(f"{self.name}: Final accumulated LLM response text (raw plan): {final_response_str[:500]}...")
+        logger.info(f"'{self.name}' generated plan (first 500 chars): {final_response_str[:500]}...")
 
         # Store the raw output from the LLM. ExecutorAgent will parse this.
         context.session.state["planner_raw_output"] = final_response_str
@@ -540,10 +530,10 @@ class ExecutorAgent(LlmAgent):
         self.instruction = self.instruction_template # Will be formatted in _run_async_impl
         self.tools = tools or []
         self.model = os.getenv(model_name_env_var, default_model_name)
-        logger.info(f"{self.name} initialized with model: {self.model} (from env var '{model_name_env_var}' or default)")
+        logger.info(f"'{self.name}' initialized with model '{self.model}'.")
 
     async def _run_async_impl(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
-        logger.info(f"{self.name}: Starting run...")
+        logger.info(f"'{self.name}' is starting its run.")
         planner_raw_output = context.session.state.get("planner_raw_output", "")
         # agent_spec_document is expected to be a dict if present, or None
         agent_spec_document_dict = context.session.state.get("agent_spec_document")
@@ -560,7 +550,7 @@ class ExecutorAgent(LlmAgent):
             context.session.state["executor_outcome"] = no_task_outcome
             # Yield the expected JSON structure even for no task
             yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=json.dumps(no_task_outcome))]))
-            logger.info(f"{self.name}: No planner output or agent spec to process.")
+            logger.info(f"'{self.name}' has no plan or agent specification to execute.")
             return
 
         knowledge_content = _read_file_impl("knowledge.md")
@@ -593,7 +583,7 @@ class ExecutorAgent(LlmAgent):
             self.instruction = original_instruction_template # Restore original unformatted instruction
 
         llm_final_response_str = "".join(final_response_text_parts).strip()
-        logger.info(f"{self.name}: Final accumulated LLM response: {llm_final_response_str[:500]}...")
+        logger.info(f"'{self.name}' final response (first 500 chars): {llm_final_response_str[:500]}...")
 
         # Default outcome in case of parsing failure or unexpected LLM output
         execution_summary = f"LLM Raw Output: {llm_final_response_str}"
@@ -618,9 +608,9 @@ class ExecutorAgent(LlmAgent):
                 if agent_spec_document_dict and "generation_summary" in parsed_llm_json_output:
                     execution_summary = parsed_llm_json_output.get("generation_summary", execution_summary)
                     # Potentially log proposed_system_agents_content and validation_successful
-                    logger.info(f"{self.name}: Agent generation task processed. Validation successful: {parsed_llm_json_output.get('validation_successful')}")
+                    logger.info(f"'{self.name}' processed agent generation. Validation: {parsed_llm_json_output.get('validation_successful')}")
                 
-                logger.info(f"{self.name}: Parsed LLM JSON. System agents modified and validated: {any_system_agents_modified_and_validated}. Summary: {execution_summary[:200]}")
+                logger.info(f"'{self.name}' parsed response. System files modified: {any_system_agents_modified_and_validated}. Summary: {execution_summary[:200]}")
             else:
                 logger.warning(f"{self.name}: LLM output was not a JSON object as expected. Original raw output: {llm_final_response_str}. Processed: {processed_llm_response_str}")
                 # system_agents_modified_and_validated remains false as we can't confirm from non-JSON output.
@@ -641,7 +631,7 @@ class ExecutorAgent(LlmAgent):
         
         # The event yielded back to the orchestrator should be the LLM's final (attempted) JSON response.
         yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=llm_final_response_str)]))
-        logger.info(f"{self.name}: Executor processing complete. Structured outcome: {final_structured_outcome}")
+        logger.info(f"'{self.name}' finished execution. Outcome: {final_structured_outcome}")
 
 
 class LearningAgent(LlmAgent):
@@ -654,10 +644,10 @@ class LearningAgent(LlmAgent):
         self.instruction = self.instruction_template # Will be formatted in _run_async_impl
         self.tools = tools or []
         self.model = os.getenv(model_name_env_var, default_model_name)
-        logger.info(f"{self.name} initialized with model: {self.model} (from env var '{model_name_env_var}' or default)")
+        logger.info(f"'{self.name}' initialized with model '{self.model}'.")
 
     async def _run_async_impl(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
-        logger.info(f"{self.name}: Starting run...")
+        logger.info(f"'{self.name}' is starting its run.")
         executor_outcome = context.session.state.get("executor_outcome", {"log": ["No executor outcome available."]})
         fail_log = context.session.state.get("failure_log_summary", "No failure log summary available.")
         learnings = context.session.state.get("learnings", [])
@@ -705,7 +695,7 @@ class LearningAgent(LlmAgent):
             self.instruction = original_instruction # Restore original unformatted instruction
         
         final_response_str = "".join(final_response_text_parts).strip()
-        logger.info(f"{self.name}: Final accumulated LLM response text: {final_response_str[:500]}...")
+        logger.info(f"'{self.name}' final response (first 500 chars): {final_response_str[:500]}...")
 
         new_k_content_from_llm, cap_gap_report, analysis_sum = "", None, f"LLM Raw Response: {final_response_str}"
         try:
@@ -732,11 +722,11 @@ class LearningAgent(LlmAgent):
                     analysis_sum = processed_final_response_str
 
             if not new_k_content_from_llm:
-                logger.info(f"{self.name}: LLM did not provide new content for knowledge.md. No update will be written.")
+                logger.info(f"'{self.name}' determined no new knowledge needs to be saved.")
                 k_status = "No update to knowledge.md from LLM."
             else:
                 k_status = _write_file_impl("knowledge.md", new_k_content_from_llm)
-                logger.info(f"{self.name}: knowledge.md update status: {k_status}")
+                logger.info(f"Knowledge file update status: {k_status}")
 
         except json.JSONDecodeError as e:
             logger.error(f"{self.name}: Error parsing LLM JSON response: {e}. LLM Response: {final_response_str}")
@@ -751,7 +741,7 @@ class LearningAgent(LlmAgent):
             context.session.state["capability_gap_report"] = cap_gap_report
         
         yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=json.dumps(outcome))]))
-        logger.info(f"{self.name}: Learning agent processing complete. Outcome: {outcome}")
+        logger.info(f"'{self.name}' finished learning. Outcome: {outcome}")
 
 
 class TopLevelOrchestratorAgent(BaseAgent):
@@ -786,17 +776,17 @@ class TopLevelOrchestratorAgent(BaseAgent):
             f"init_knowledge is set: {self.init_knowledge is not None}"
         )
         if self.init_objective is not None:
-            logger.info(f"{self.name}.model_post_init: init_objective value (first 100 chars): {str(self.init_objective)[:100]}...")
+            logger.info(f"Orchestrator initialized with objective (first 100 chars): {str(self.init_objective)[:100]}...")
         else:
-            logger.info(f"{self.name}.model_post_init: init_objective is None.")
+            logger.info("Orchestrator initialized without a specific objective.")
         
         if self.init_knowledge is not None:
-            logger.info(f"{self.name}.model_post_init: init_knowledge value (first 100 chars): {str(self.init_knowledge)[:100]}...")
+            logger.info(f"Orchestrator initialized with knowledge (first 100 chars): {str(self.init_knowledge)[:100]}...")
         else:
-            logger.info(f"{self.name}.model_post_init: init_knowledge is None.")
+            logger.info("Orchestrator initialized with an empty knowledge base.")
         
     async def _run_async_impl(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
-        logger.info(f"{self.name}: Orchestrator _run_async_impl started. Session ID: {context.session.id}")
+        logger.info(f"Orchestrator run started for session: {context.session.id}")
         
         # Internal loop counter for the orchestrator instance
         if not hasattr(self, '_internal_loop_count'):
@@ -806,7 +796,7 @@ class TopLevelOrchestratorAgent(BaseAgent):
         # However, we will primarily rely on self._internal_loop_count for the orchestrator's own logic.
         # The session state 'current_loop' will be set by this orchestrator for other agents.
         if self._internal_loop_count == 0:
-            logger.info(f"{self.name}: First execution run (internal_loop_count is 0). Initializing session state from new_message.")
+            logger.info("Orchestrator: First run. Initializing session state.")
             
             initial_message = getattr(context, 'new_message', None)
 
@@ -820,7 +810,7 @@ class TopLevelOrchestratorAgent(BaseAgent):
                     elif part.inline_data and 'image' in part.inline_data.mime_type:
                         if not image_part: # Store the first image found
                             image_part = part
-                            logger.info(f"{self.name}: Found image part in new_message (MIME type: {part.inline_data.mime_type}).")
+                            logger.info(f"Found image in user request (type: {part.inline_data.mime_type}).")
 
             # The objective is the combined text from all text parts.
             objective_text = " ".join(text_parts).strip()
@@ -828,11 +818,11 @@ class TopLevelOrchestratorAgent(BaseAgent):
             # Set objective from message parts if not already in state.
             if "objective" not in context.session.state and objective_text:
                 context.session.state["objective"] = objective_text
-                logger.info(f"{self.name}: 'objective' set in session state from new_message: {objective_text[:100]}...")
+                logger.info(f"Objective set from user request: {objective_text[:100]}...")
             # Fallback to init_objective only if no objective is in state and no text was in the message.
             elif "objective" not in context.session.state and self.init_objective:
                 context.session.state["objective"] = self.init_objective
-                logger.info(f"{self.name}: 'objective' set in session state from self.init_objective (fallback): {str(self.init_objective)[:100]}...")
+                logger.info(f"Objective set from initial configuration: {str(self.init_objective)[:100]}...")
 
             if image_part:
                 context.session.state["objective_image"] = image_part
@@ -840,13 +830,13 @@ class TopLevelOrchestratorAgent(BaseAgent):
             # Knowledge is still loaded from init_knowledge, as it's not part of the user request.
             if self.init_knowledge is not None:
                 context.session.state["knowledge"] = self.init_knowledge
-                logger.info(f"{self.name}: 'knowledge' set in session state from self.init_knowledge: {str(self.init_knowledge)[:100]}...")
+                logger.info(f"Knowledge base loaded: {str(self.init_knowledge)[:100]}...")
             
             context.session.state["learnings"] = [] # Initialize learnings list
             context.session.state["current_loop"] = 0 # Explicitly set session's loop counter for this run
             context.session.state["execution_id"] = context.session.id # Explicitly set execution_id
         
-        logger.info(f"{self.name}: Session state before critical checks: {dict(context.session.state)}")
+        logger.debug(f"{self.name}: Session state before critical checks: {dict(context.session.state)}")
 
         # CRITICAL CHECKS (now after attempting to load from new_message)
         if "objective" not in context.session.state:
@@ -860,7 +850,7 @@ class TopLevelOrchestratorAgent(BaseAgent):
         
         # Use the session's current_loop, which was initialized by this agent on its first run.
         current_loop_from_session = context.session.state.get("current_loop", 0)
-        logger.info(f"{self.name}: Starting loop {current_loop_from_session + 1} of {self.max_loops} (Orchestrator internal count: {self._internal_loop_count + 1}).")
+        logger.info(f"Starting loop {current_loop_from_session + 1}/{self.max_loops}.")
 
         if self._internal_loop_count >= self.max_loops:
             logger.warning(f"{self.name}: Maximum loop count ({self.max_loops}) reached.")
@@ -869,7 +859,7 @@ class TopLevelOrchestratorAgent(BaseAgent):
             return
 
         # Run core agent sequence
-        logger.info(f"{self.name}: Session state in Orchestrator before calling PlannerAgent: {dict(context.session.state)}")
+        logger.debug(f"{self.name}: Session state in Orchestrator before calling PlannerAgent: {dict(context.session.state)}")
 
         # Construct the message for the planner from session state
         planner_message_parts = []
@@ -878,7 +868,7 @@ class TopLevelOrchestratorAgent(BaseAgent):
         objective_image = context.session.state.get("objective_image")
         if objective_image:
             planner_message_parts.append(objective_image)
-            logger.info(f"{self.name}: Passing image part to PlannerAgent.")
+            logger.info("Passing image to PlannerAgent for analysis.")
 
         planner_message = adk_types.Content(parts=planner_message_parts)
 
@@ -907,7 +897,7 @@ class TopLevelOrchestratorAgent(BaseAgent):
         executor_outcome = context.session.state.get("executor_outcome", {})
         loop_final_status = "completed_loop"
         if executor_outcome.get("system_agents_modified_and_validated"):
-            logger.info(f"{self.name}: ExecutorAgent reported modification to system_agents.py. Requesting reload.")
+            logger.info("System files were modified. Requesting application reload.")
             loop_final_status = "reload_requested"
         
         final_loop_outcome = {
@@ -917,19 +907,19 @@ class TopLevelOrchestratorAgent(BaseAgent):
         }
         context.session.state["overall_loop_outcome"] = final_loop_outcome
         yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=json.dumps(final_loop_outcome))]))
-        logger.info(f"{self.name}: Loop {self._internal_loop_count} finished with status: {loop_final_status}.")
+        logger.info(f"Loop {self._internal_loop_count} finished with status: {loop_final_status}.")
 
 def get_adk_runner_and_services(
     initial_objective: str,
     initial_knowledge: str
 ) -> Tuple[Runner, BaseSessionService, BaseArtifactService, TopLevelOrchestratorAgent]:
-    logger.info("Initializing ADK services and agents...")
+    logger.info("Initializing ADK services and agents.")
     session_service: BaseSessionService = InMemorySessionService()
     # Instantiate FileSystemArtifactService instead of InMemoryArtifactService
     # You can specify a base_storage_path if needed, e.g., FileSystemArtifactService(base_storage_path="my_custom_artifacts_dir")
     # Using default "adk_artifacts" for now.
     artifact_service: BaseArtifactService = FileSystemArtifactService()
-    logger.info(f"Using FileSystemArtifactService with base path: {os.path.abspath(artifact_service.base_storage_path)}")
+    logger.info(f"Using file system for artifact storage at {os.path.abspath(artifact_service.base_storage_path)}")
     
     # Define common tools for agents that use them
     file_io_command_tools = [_read_file_impl, _write_file_impl, _execute_command_impl]
@@ -971,7 +961,7 @@ async def run_adk_loop(
     initial_knowledge_content: str,
     ipc_q: Optional[Any] = None
 ):
-    logger.info("Starting new ADK execution loop...")
+    logger.info("Starting new ADK execution loop.")
     user_id = "system_user_main_loop"
     
     try:
@@ -999,7 +989,7 @@ async def run_adk_loop(
     image_paths = re.findall(image_path_pattern, initial_objective)
 
     if image_paths:
-        logger.info(f"Found potential image paths in objective: {image_paths}")
+        logger.info(f"Found image paths in objective: {image_paths}")
         for image_path in image_paths:
             # Clean up path from quotes
             clean_path = image_path.strip('\'"')
@@ -1010,7 +1000,7 @@ async def run_adk_loop(
                     mime_type, _ = mimetypes.guess_type(clean_path)
                     if mime_type and 'image' in mime_type:
                         message_parts.append(adk_types.Part(inline_data=adk_types.Blob(mime_type=mime_type, data=image_data)))
-                        logger.info(f"Successfully loaded image '{clean_path}' as Part with MIME type {mime_type}.")
+                        logger.info(f"Loaded image '{clean_path}' ({mime_type}).")
                         # Remove the path from the objective text to avoid redundancy
                         objective_text_without_paths = objective_text_without_paths.replace(image_path, "").strip()
                     else:
@@ -1028,7 +1018,7 @@ async def run_adk_loop(
     last_event_data_str = None
     
     try:
-        logger.info(f"Invoking ADK runner for session {current_session.id}...")
+        logger.info(f"Invoking ADK runner for session {current_session.id}.")
         # Pass the initial_runner_message, which now contains full objective and knowledge.
         # TopLevelOrchestratorAgent will use this to bootstrap its session state if needed.
         async for event in adk_runner.run_async(user_id=current_session.user_id, session_id=current_session.id, new_message=initial_runner_message):
@@ -1042,7 +1032,7 @@ async def run_adk_loop(
                 if event_data.parts and event_data.parts[0].text:
                     last_event_data_str = event_data.parts[0].text
 
-        logger.info(f"ADK runner execution completed for session {session_id}. Total events: {len(final_events_summary)}.")
+        logger.info(f"ADK runner finished for session {session_id}. Events: {len(final_events_summary)}.")
         
         # Retrieve final session state to check for outcomes like 'modified_system_agents'
         final_session = await session_service.get_session(app_name=adk_runner.app_name, user_id=user_id, session_id=session_id)
@@ -1055,10 +1045,10 @@ async def run_adk_loop(
             
         if ipc_q:
             if reload_requested:
-                logger.info("ADK Loop: Reload of system components requested by an agent.")
+                logger.info("ADK loop finished. System components will be reloaded.")
                 ipc_q.put({'type': 'modification_complete', 'status': 'success_reload_requested'})
             else:
-                logger.info("ADK Loop: Completed normally without reload request.")
+                logger.info("ADK loop completed normally.")
                 # Try to parse last_event_data_str if it's JSON, otherwise pass as string
                 summary_output = last_event_data_str
                 try:
