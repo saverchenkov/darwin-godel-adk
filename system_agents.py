@@ -74,11 +74,18 @@ IF YOU RECEIVE A PLAN ({planner_raw_output}):
     d. Use `_execute_command_impl` with 'python -m py_compile temp_system_agents.py' to validate the syntax of the temporary file.
     e. If syntax validation is successful (RC: 0 and no errors in stderr), use `_write_file_impl` to overwrite the actual 'system_agents.py' with the content from the temporary file.
     f. If syntax validation fails, log the error and DO NOT overwrite 'system_agents.py'. Abort this specific modification attempt.
-4. If coding for the user's objective: Detail the steps and use the available tools to execute them.
+4. If coding for the user's objective:
+    a. Before executing any Python code with `_unsafe_execute_code_impl`, you MUST first validate its syntax.
+    b. Write the code to a temporary file (e.g., 'temp_code.py').
+    c. Use `_execute_command_impl` with 'python -m py_compile temp_code.py' to check for compilation errors.
+    d. If the command returns a non-zero return code or stderr contains errors, the code is invalid. You MUST NOT execute it.
+    e. Instead, you must analyze the compilation errors and attempt to fix the code. Repeat steps b-d in a loop until the code compiles successfully.
+    f. Only once the code compiles successfully (RC: 0 and no stderr), you may execute it using `_unsafe_execute_code_impl`.
+    g. Detail all steps, including compilation checks and fixes, in your execution summary.
 5. After processing all tasks from the plan:
    YOUR FINAL RESPONSE MUST be a JSON string.
    This JSON string must contain two keys:
-   - "execution_summary": A string summarizing all actions taken, outcomes, and any errors.
+   - "execution_summary": A string summarizing all actions taken, outcomes, and any errors. This summary MUST include details of any code compilation and fixing cycles.
    - "system_agents_modified_and_validated": A boolean (true or false) indicating if 'system_agents.py' was successfully modified AND validated during this execution run. Set this to true ONLY if the overwrite in step 3e occurred.
 
 IF YOU RECEIVE AN AGENT SPECIFICATION DOCUMENT ({agent_spec_document}):
@@ -90,7 +97,7 @@ IF YOU RECEIVE AN AGENT SPECIFICATION DOCUMENT ({agent_spec_document}):
 6. To validate syntax of all changes:
     a. Create the complete new content for 'system_agents.py' (including the new agent and orchestrator changes).
     b. Use `_write_file_impl` to write this to a temporary file.
-    c. Use `_execute_command_impl` to validate the temporary file.
+    c. Use `_execute_command_impl` with 'python -m py_compile temp_system_agents.py' to validate the temporary file.
 7. Report success/failure of generation and proposed integration.
    YOUR FINAL RESPONSE MUST be a JSON string containing:
    - "generation_summary": A string summarizing the generation process and outcome.
@@ -121,11 +128,12 @@ You can conceptually call tools: `_write_file_impl`, `_read_file_impl`, `_unsafe
 You can write and execute Python code to perform complex analysis on execution outcomes or to help structure knowledge by using the `_unsafe_execute_code_impl` tool.
 
 Perform the following:
-1.  Root Cause Analysis.
-2.  Identify Key Learnings.
-3.  Optimize `knowledge.md`.
+1.  Root Cause Analysis of any failures.
+2.  Identify Key Learnings from the execution, paying close attention to what worked well (successful strategies, useful code patterns) and what didn't.
+3.  Summarize previous learnings from the existing 'knowledge.md' to provide context for your new entry.
 4.  Identify Need for Architectural Evolution (Capability Gap Report for ArchitectAgent).
-5.  Generate `knowledge.md` Update using `_write_file_impl`.
+5.  Generate a new section to be appended to 'knowledge.md'. This section should include your analysis, key learnings, and documentation of successful patterns.
+6.  To update the knowledge base, you MUST first use `_read_file_impl` to get the complete current content of 'knowledge.md', then append your new section to it, and finally use `_write_file_impl` to save the complete, updated content. DO NOT overwrite the file with only the new section.
 
 IMPORTANT: When you generate the content for 'knowledge.md', if that content includes any text that uses curly braces (e.g., in Python f-strings or JSON-like structures), you MUST ensure these curly braces are escaped by doubling them. This is because the content of 'knowledge.md' will be used in later prompt formatting, and unescaped single curly braces will cause errors.
 

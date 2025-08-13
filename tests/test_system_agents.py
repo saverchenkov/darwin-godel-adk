@@ -6,6 +6,7 @@ from google.adk.events import Event
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.runners import RunConfig  # Corrected import
+from google.genai import types as adk_types
 from system_agents import PlannerAgent, ExecutorAgent, LearningAgent, TopLevelOrchestratorAgent
 
 @pytest.fixture
@@ -128,3 +129,62 @@ async def test_toplevel_orchestrator_runs_sequence(mock_context, mocker):
     mock_planner.assert_called_once()
     mock_executor.assert_called_once()
     mock_learner.assert_called_once()
+
+@pytest.mark.asyncio
+async def test_executor_agent_compilation_check(mock_context, mocker):
+    """Test that ExecutorAgent correctly uses the compilation check."""
+    # 1. Setup
+    mock_context.session.state["planner_raw_output"] = "1. Run this python code"
+    mocker.patch('system_agents._read_file_impl', return_value='Some knowledge')
+
+    executor = ExecutorAgent()
+
+    code_with_error = "print 'hello'"
+    corrected_code = "print('hello')"
+
+    # 2. Mock the LLM's behavior by mocking the entire tool-use loop
+    async def mock_llm_run(context):
+        # This mock simulates the sequence of tool calls and responses
+        # that the LLM would generate to follow the new instructions.
+
+        # 1. LLM tries to write the file with the error
+        write_call_1 = adk_types.FunctionCall(name="_write_file_impl", args={'path': 'temp_code.py', 'content': code_with_error})
+        yield Event(author="model", content=adk_types.Content(parts=[adk_types.Part(function_call=write_call_1)]))
+        yield Event(author="tool", content=adk_types.Content(parts=[adk_types.Part(function_response=adk_types.FunctionResponse(name="_write_file_impl", response={"output": "File written"}))]))
+
+        # 2. LLM tries to compile the file (fails)
+        compile_call_1 = adk_types.FunctionCall(name="_execute_command_impl", args={'command': 'python -m py_compile temp_code.py'})
+        yield Event(author="model", content=adk_types.Content(parts=[adk_types.Part(function_call=compile_call_1)]))
+        yield Event(author="tool", content=adk_types.Content(parts=[adk_types.Part(function_response=adk_types.FunctionResponse(name="_execute_command_impl", response={"output": "SyntaxError..."}))]))
+
+        # 3. LLM "fixes" the code and writes it again
+        write_call_2 = adk_types.FunctionCall(name="_write_file_impl", args={'path': 'temp_code.py', 'content': corrected_code})
+        yield Event(author="model", content=adk_types.Content(parts=[adk_types.Part(function_call=write_call_2)]))
+        yield Event(author="tool", content=adk_types.Content(parts=[adk_types.Part(function_response=adk_types.FunctionResponse(name="_write_file_impl", response={"output": "File written"}))]))
+
+        # 4. LLM compiles again (succeeds)
+        compile_call_2 = adk_types.FunctionCall(name="_execute_command_impl", args={'command': 'python -m py_compile temp_code.py'})
+        yield Event(author="model", content=adk_types.Content(parts=[adk_types.Part(function_call=compile_call_2)]))
+        yield Event(author="tool", content=adk_types.Content(parts=[adk_types.Part(function_response=adk_types.FunctionResponse(name="_execute_command_impl", response={"output": "RC: 0"}))]))
+
+        # 5. LLM executes the correct code
+        execute_call = adk_types.FunctionCall(name="_unsafe_execute_code_impl", args={'code': corrected_code})
+        yield Event(author="model", content=adk_types.Content(parts=[adk_types.Part(function_call=execute_call)]))
+        yield Event(author="tool", content=adk_types.Content(parts=[adk_types.Part(function_response=adk_types.FunctionResponse(name="_unsafe_execute_code_impl", response={"output": "Execution successful"}))]))
+
+        # 6. Final JSON response from LLM
+        final_text = json.dumps({"execution_summary": "Fixed and ran code.", "system_agents_modified_and_validated": False})
+        yield Event(author="model", content=adk_types.Content(parts=[adk_types.Part(text=final_text)]))
+
+
+    mocker.patch('google.adk.agents.LlmAgent._run_async_impl', side_effect=mock_llm_run)
+
+    # 3. Run the agent
+    async for _ in executor._run_async_impl(mock_context):
+        pass
+
+    # 4. Assertions
+    final_outcome = mock_context.session.state.get("executor_outcome")
+    assert final_outcome is not None
+    assert final_outcome["execution_summary"] == "Fixed and ran code."
+    assert final_outcome["system_agents_modified_and_validated"] is False
