@@ -10,8 +10,8 @@ The primary challenges stemmed from the lack of documentation for the ARC-AGI-3 
 
 ### Key Learnings
 
-*   {{quote}}Successful Strategies{{quote}}: The ExecutorAgent successfully implemented basic visualization and random action selection, demonstrating core functionalities.  The structured approach to task breakdown, as defined by the PlannerAgent, proved effective for execution.
-*   {{quote}}Unsuccessful Strategies{{quote}}: The reliance on inherent environment do...
+*   quoteSuccessful Strategiesquote: The ExecutorAgent successfully implemented basic visualization and random action selection, demonstrating core functionalities.  The structured approach to task breakdown, as defined by the PlannerAgent, proved effective for execution.
+*   quoteUnsuccessful Strategiesquote: The reliance on inherent environment do...
 
 ## Execution Analysis - 676af88a-1a8d-49f2-af9e-dad84512a7d4
 
@@ -23,8 +23,8 @@ The primary cause of failure was the inability to install the required package, 
 
 ### Key Learnings
 
-*   {{quote}}Successful Strategies{{quote}}: The PlannerAgent successfully structured the execution plan into clear, sequential steps. This facilitated traceability and identification of the point of failure.
-*   {{quote}}Unsuccessful Strategies{{quote}}:  The current system lacks robust error handling for package installation failures.  The failure to install `arc-agi-3` resulted in the termination of the entire execution plan.  The system should be designed to handle such failures gracefully and proceed with other steps wherever possible.
+*   quoteSuccessful Strategiesquote: The PlannerAgent successfully structured the execution plan into clear, sequential steps. This facilitated traceability and identification of the point of failure.
+*   quoteUnsuccessful Strategiesquote:  The current system lacks robust error handling for package installation failures.  The failure to install `arc-agi-3` resulted in the termination of the entire execution plan.  The system should be designed to handle such failures gracefully and proceed with other steps wherever possible.
 
 ### Code Patterns
 

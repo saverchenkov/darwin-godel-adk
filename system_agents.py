@@ -475,8 +475,10 @@ class PlannerAgent(LlmAgent):
         logger.debug(f"{self.name}: Objective being used for formatting: {objective[:200]}...")
         logger.debug(f"{self.name}: Knowledge being used for formatting: {knowledge[:200]}...")
         
-        knowledge = knowledge.replace('{', '{{').replace('}', '}}')
-        formatted_instruction = self.instruction_template.format(objective=objective, knowledge=knowledge)
+        # Manually replace placeholders to avoid issues with .format() and user content
+        instruction = self.instruction_template.replace("{objective}", objective)
+        instruction = instruction.replace("{knowledge}", knowledge)
+        formatted_instruction = instruction
         
         original_instruction = self.instruction
         self.instruction = formatted_instruction
@@ -555,11 +557,11 @@ class ExecutorAgent(LlmAgent):
         current_planner_output_for_prompt = planner_raw_output if planner_raw_output else "N/A - Agent Generation Task"
         current_agent_spec_for_prompt = json.dumps(agent_spec_document_dict) if agent_spec_document_dict else "N/A - Plan Execution Task"
 
-        formatted_instruction = original_instruction_template.format(
-            planner_raw_output=current_planner_output_for_prompt,
-            agent_spec_document=current_agent_spec_for_prompt,
-            knowledge_md_excerpt=knowledge_excerpt
-        )
+        # Manually replace placeholders for resilience
+        instruction = original_instruction_template.replace("{planner_raw_output}", current_planner_output_for_prompt)
+        instruction = instruction.replace("{agent_spec_document}", current_agent_spec_for_prompt)
+        instruction = instruction.replace("{knowledge_md_excerpt}", knowledge_excerpt)
+        formatted_instruction = instruction
         self.instruction = formatted_instruction # Set the formatted instruction for the superclass call
         logger.debug(f"{self.name}: Instruction (first 500 chars): {self.instruction[:500]}...")
 
@@ -661,13 +663,13 @@ class LearningAgent(LlmAgent):
             k_summary, k_content_for_llm = f"Error reading knowledge.md: {e}", ""
         
         execution_id = context.session.id if context.session else "unknown_session"
-        formatted_instruction = self.instruction_template.format(
-            execution_outcomes_summary_json=json.dumps(executor_outcome),
-            failure_log_summary=json.dumps(fail_log),
-            learnings_list_json=json.dumps(learnings),
-            current_knowledge=k_summary.replace('{', '{{').replace('}', '}}'),
-            execution_id=execution_id
-        )
+        # Manually replace placeholders for resilience
+        instruction = self.instruction_template.replace("{execution_outcomes_summary_json}", json.dumps(executor_outcome))
+        instruction = instruction.replace("{failure_log_summary}", json.dumps(fail_log))
+        instruction = instruction.replace("{learnings_list_json}", json.dumps(learnings))
+        instruction = instruction.replace("{current_knowledge}", k_summary)
+        instruction = instruction.replace("{execution_id}", execution_id)
+        formatted_instruction = instruction
         
         original_instruction = self.instruction
         self.instruction = formatted_instruction
