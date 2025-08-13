@@ -37,17 +37,6 @@ from google.adk.artifacts.base_artifact_service import BaseArtifactService
 
 logger = logging.getLogger(__name__)
 
-logger.info(f"Attempting to load .env from: {dotenv_path}")
-if os.path.exists(dotenv_path):
-    logger.info(".env file found and loaded.")
-else:
-    logger.warning(".env file NOT found at the specified path.")
-
-if not os.getenv("GOOGLE_API_KEY"):
-    logger.warning("GOOGLE_API_KEY not found in environment. LLM calls may fail.")
-else:
-    logger.info("GOOGLE_API_KEY found in environment.")
-
 
 PLANNER_INSTRUCTION_V1 = """
 You are a strategic PlannerAgent. Your sole responsibility is to create a clear, step-by-step plan for an ExecutorAgent to follow.
@@ -963,20 +952,19 @@ async def run_adk_loop(
     logger.info("Starting new ADK execution loop.")
     user_id = "system_user_main_loop"
     
+    session_object: Optional[Session] = None
     try:
         session_object = await session_service.create_session(user_id=user_id, app_name=adk_runner.app_name)
-        session_id = session_object.id
-        logger.info(f"Created new session with ID: {session_id}")
+        logger.info(f"Created new session with ID: {session_object.id}")
     except Exception as e:
         logger.critical(f"Failed to create ADK session: {e}", exc_info=True)
         if ipc_q: ipc_q.put({'type': 'critical_error', 'message': f'Session creation failed: {e}'})
         return {"status": "error", "message": "Session creation failed"}
 
-    current_session = await session_service.get_session(app_name=adk_runner.app_name, user_id=user_id, session_id=session_id)
-    if not current_session:
-        logger.critical(f"Failed to retrieve newly created session: {session_id}")
-        if ipc_q: ipc_q.put({'type': 'critical_error', 'message': 'Session retrieval failed after creation'})
-        return {"status": "error", "message": "Session retrieval failed"}
+    if not session_object:
+        logger.critical("Session object is None after creation, cannot proceed.")
+        if ipc_q: ipc_q.put({'type': 'critical_error', 'message': 'Session object None after creation'})
+        return {"status": "error", "message": "Session object None after creation"}
         
     # The initial message passed to the runner can be multimodal.
     # We will parse the objective for image paths and construct the message accordingly.
@@ -1017,10 +1005,10 @@ async def run_adk_loop(
     last_event_data_str = None
     
     try:
-        logger.info(f"Invoking ADK runner for session {current_session.id}.")
+        logger.info(f"Invoking ADK runner for session {session_object.id}.")
         # Pass the initial_runner_message, which now contains full objective and knowledge.
         # TopLevelOrchestratorAgent will use this to bootstrap its session state if needed.
-        async for event in adk_runner.run_async(user_id=current_session.user_id, session_id=current_session.id, new_message=initial_runner_message):
+        async for event in adk_runner.run_async(user_id=session_object.user_id, session_id=session_object.id, new_message=initial_runner_message):
             event_type = getattr(event, 'type', str(type(event)))
             event_data = getattr(event, 'data', str(event))
             logger.debug(f"ADK Event Received: Type='{event_type}', Data='{str(event_data)[:200]}...'")
@@ -1031,16 +1019,15 @@ async def run_adk_loop(
                 if event_data.parts and event_data.parts[0].text:
                     last_event_data_str = event_data.parts[0].text
 
-        logger.info(f"ADK runner finished for session {session_id}. Events: {len(final_events_summary)}.")
+        logger.info(f"ADK runner finished for session {session_object.id}. Events: {len(final_events_summary)}.")
         
-        # Retrieve final session state to check for outcomes like 'modified_system_agents'
-        final_session = await session_service.get_session(app_name=adk_runner.app_name, user_id=user_id, session_id=session_id)
+        # Use the session_object directly. Its state should have been updated by the runner.
         reload_requested = False
-        if final_session and final_session.state:
-            final_session_state = final_session.state
+        if session_object.state:
+            final_session_state = session_object.state
             reload_requested = final_session_state.get("overall_loop_outcome", {}).get("status") == "reload_requested"
         else:
-            logger.warning(f"Could not retrieve final session or session state for session ID {session_id} to check for reload request.")
+            logger.warning(f"Session state is empty for session ID {session_object.id} after run.")
             
         if ipc_q:
             if reload_requested:
@@ -1060,7 +1047,8 @@ async def run_adk_loop(
         return last_event_data_str
 
     except Exception as e:
-        logger.critical(f"Critical error during ADK runner execution (session {session_id}): {e}", exc_info=True)
+        session_id_for_error = session_object.id if session_object else "unknown"
+        logger.critical(f"Critical error during ADK runner execution (session {session_id_for_error}): {e}", exc_info=True)
         if ipc_q: ipc_q.put({'type': 'critical_error', 'message': f'ADK run failed: {e}', 'details': traceback.format_exc()})
         # Do not re-raise here if ipc_q is handling it, to allow graceful shutdown if possible.
         # If no ipc_q, re-raising might be appropriate depending on desired behavior.

@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import List, Optional
 from queue import Empty as QueueEmptyException
 
+import colorlog
 import git
 from dotenv import load_dotenv
 from git.exc import GitCommandError, InvalidGitRepositoryError, NoSuchPathError
@@ -20,15 +21,42 @@ from git.exc import GitCommandError, InvalidGitRepositoryError, NoSuchPathError
 # Load environment variables from .env file
 load_dotenv()
 
-# Configure logging
+# Configure logging with color
 LOGGING_LEVEL = os.getenv("LOGGING_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=LOGGING_LEVEL,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
-)
+THIRD_PARTY_LOGGING_LEVEL = os.getenv("THIRD_PARTY_LOGGING_LEVEL", "WARNING").upper()
+
+handler = colorlog.StreamHandler()
+handler.setFormatter(colorlog.ColoredFormatter(
+    '%(log_color)s%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    log_colors={
+        'DEBUG':    'cyan',
+        'INFO':     'green',
+        'WARNING':  'yellow',
+        'ERROR':    'red',
+        'CRITICAL': 'red,bg_white',
+    }
+))
+
+# Configure root logger explicitly to override any library settings
+root_logger = logging.getLogger()
+root_logger.setLevel(LOGGING_LEVEL)
+
+# Clear any existing handlers and add our colored handler
+if root_logger.hasHandlers():
+    root_logger.handlers.clear()
+root_logger.addHandler(handler)
+
+# Get the main orchestrator logger and set its level explicitly
 logger = logging.getLogger("MainOrchestrator")
-logger.info(f"Logging level set to {LOGGING_LEVEL}")
+logger.setLevel(LOGGING_LEVEL)
+
+# Suppress verbose logs from third-party libraries based on the .env setting
+third_party_loggers = ["httpcore", "httpx", "google_adk", "google_genai", "git", "asyncio"]
+for lib_name in third_party_loggers:
+    logging.getLogger(lib_name).setLevel(THIRD_PARTY_LOGGING_LEVEL)
+
+logger.info(f"Application logging level set to {LOGGING_LEVEL}")
+logger.info(f"Third-party library logging level set to {THIRD_PARTY_LOGGING_LEVEL}")
 
 # --- Configuration ---
 SYSTEM_AGENTS_FILE = Path(os.getenv("SYSTEM_AGENTS_FILE", "system_agents.py"))
@@ -441,6 +469,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Main Orchestrator for the Darwin Gödel Machine")
     parser.add_argument("--run-once", action="store_true", help="Run the orchestrator for a single iteration and then exit.")
     args = parser.parse_args()
-        
+    logger.info("Starting Main Orchestrator...")
     orchestrator = MainOrchestrator(run_once=args.run_once)
     orchestrator.run()
