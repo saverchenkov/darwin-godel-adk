@@ -14,6 +14,7 @@ from pathlib import Path
 import aiofiles
 import aiofiles.os as aios
 from pydantic import BaseModel, Field, DirectoryPath
+from retry import retry
 
 from dotenv import load_dotenv
 
@@ -36,6 +37,9 @@ from google.adk.sessions import InMemorySessionService, BaseSessionService, Sess
 from google.adk.artifacts.base_artifact_service import BaseArtifactService
 
 logger = logging.getLogger(__name__)
+class RetryableError(IOError):
+    """Custom exception for retryable errors."""
+    pass
 
 
 PLANNER_INSTRUCTION_V1 = """
@@ -457,43 +461,18 @@ class PlannerAgent(LlmAgent):
         self.model = os.getenv(model_name_env_var, default_model_name)
         logger.info(f"'{self.name}' initialized with model '{self.model}'.")
 
-    async def _run_async_impl(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
-        logger.info(f"'{self.name}' is starting its run.")
-        logger.debug(f"{self.name}: Context session ID: {context.session.id if context.session else 'No session in context'}")
-        logger.debug(f"{self.name}: Full session state at start of PlannerAgent run: {dict(context.session.state) if context.session else 'No session state'}")
-
-        objective_from_state = context.session.state.get("objective", "Not specified")
-        knowledge_from_state = context.session.state.get("knowledge", "None available")
-        
-        logger.info(f"'{self.name}' received objective: '{objective_from_state}'")
-        logger.debug(f"{self.name}: Full objective string from state: {objective_from_state[:500]}...")
-        logger.info(f"'{self.name}' received knowledge (first 200 chars): '{knowledge_from_state[:200]}...'")
-        
-        objective = objective_from_state
-        knowledge = knowledge_from_state
-        
-        logger.debug(f"{self.name}: Objective being used for formatting: {objective[:200]}...")
-        logger.debug(f"{self.name}: Knowledge being used for formatting: {knowledge[:200]}...")
-        
-        # Manually replace placeholders to avoid issues with .format() and user content
-        instruction = self.instruction_template.replace("{objective}", objective)
-        instruction = instruction.replace("{knowledge}", knowledge)
-        formatted_instruction = instruction
-        
-        original_instruction = self.instruction
-        self.instruction = formatted_instruction
-        logger.debug(f"{self.name}: Instruction: {self.instruction[:200]}...")
-        
+    @retry(Exception, tries=3, delay=2, backoff=2)
+    async def _invoke_llm_with_retry(self, context: InvocationContext) -> List[str]:
         final_response_text_parts = []
         try:
             async for event in super()._run_async_impl(context):
+                if event.error_code and "503" in str(event.error_code):
+                    raise RetryableError(f"Service Unavailable: {event.error_code}")
+
                 if event.error_code:
                     error_message = f"PlannerAgent LLM call failed with error code: {event.error_code}."
                     logger.error(error_message)
-                    # Overwrite any partial text with a clear error message for the Executor.
-                    final_response_text_parts = [f"1. CRITICAL: Planning phase failed. Error: {event.error_code}. Cannot proceed."]
-                    yield event
-                    break  # Stop processing further events after a critical error.
+                    return [f"1. CRITICAL: Planning phase failed. Error: {event.error_code}. Cannot proceed."]
 
                 current_text_part = None
                 if event.content and event.content.parts:
@@ -504,19 +483,52 @@ class PlannerAgent(LlmAgent):
                 
                 if current_text_part:
                     final_response_text_parts.append(current_text_part)
-                    logger.debug(f"{self.name} event content processed and appended. Current part snippet: {current_text_part[:100]}...")
-                
-                yield event
-        finally:
-            self.instruction = original_instruction # Restore original unformatted instruction
+            return final_response_text_parts
+        except Exception as e:
+            if "503" in str(e):
+                raise RetryableError(f"Service Unavailable: {e}")
+            else:
+                logger.error(f"{self.name} encountered a non-retryable exception: {e}")
+                return [f"1. CRITICAL: Planning phase failed due to an exception. Error: {e}."]
+
+
+    async def _run_async_impl(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
+        logger.info(f"'{self.name}' is starting its run.")
+        objective_from_state = context.session.state.get("objective", "Not specified")
+        knowledge_from_state = context.session.state.get("knowledge", "None available")
         
+        logger.info(f"'{self.name}' received objective: '{objective_from_state}'")
+        logger.info(f"'{self.name}' received knowledge (first 200 chars): '{knowledge_from_state[:200]}...'")
+        
+        objective = objective_from_state
+        knowledge = knowledge_from_state
+        
+        instruction = self.instruction_template.replace("{objective}", objective)
+        instruction = instruction.replace("{knowledge}", knowledge)
+        
+        original_instruction = self.instruction
+        self.instruction = instruction
+        logger.debug(f"{self.name}: Instruction: {self.instruction[:200]}...")
+        
+        final_response_text_parts = []
+        try:
+            final_response_text_parts = await self._invoke_llm_with_retry(context)
+        except Exception as e:
+            logger.error(f"{self.name} failed after multiple retries: {e}")
+            final_response_text_parts = [f"1. CRITICAL: Planning phase failed after multiple retries. Error: {e}."]
+            # The exception will be caught by the orchestrator, so we just yield the event.
+            yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text="".join(final_response_text_parts))]))
+            raise
+        finally:
+            self.instruction = original_instruction
+
         final_response_str = "".join(final_response_text_parts).strip()
         logger.info(f"'{self.name}' generated plan (first 500 chars): {final_response_str[:500]}...")
 
-        # Store the raw output from the LLM. ExecutorAgent will parse this.
         context.session.state["planner_raw_output"] = final_response_str
         context.session.state["planner_outcome"] = {"raw_output": final_response_str}
         context.session.state.setdefault("learnings", []).append(f"{self.name}: Planning phase completed, raw output stored.")
+        yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=final_response_str)]))
 
 class ExecutorAgent(LlmAgent):
     instruction_template: str = EXECUTOR_INSTRUCTION_V1
@@ -530,15 +542,28 @@ class ExecutorAgent(LlmAgent):
         self.model = os.getenv(model_name_env_var, default_model_name)
         logger.info(f"'{self.name}' initialized with model '{self.model}'.")
 
+    @retry(Exception, tries=3, delay=2, backoff=2)
+    async def _invoke_llm_with_retry(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
+        try:
+            async for event in super()._run_async_impl(context):
+                if event.error_code and "503" in str(event.error_code):
+                    raise RetryableError(f"Service Unavailable: {event.error_code}")
+                yield event
+        except Exception as e:
+            if "503" in str(e):
+                raise RetryableError(f"Service Unavailable: {e}")
+            else:
+                logger.error(f"{self.name} encountered a non-retryable exception: {e}")
+                yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=json.dumps({
+                    "execution_summary": f"ExecutorAgent failed due to an exception. Error: {e}",
+                    "system_agents_modified_and_validated": False
+                }))]))
+
+
     async def _run_async_impl(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
         logger.info(f"'{self.name}' is starting its run.")
         planner_raw_output = context.session.state.get("planner_raw_output", "")
-        # agent_spec_document is expected to be a dict if present, or None
         agent_spec_document_dict = context.session.state.get("agent_spec_document")
-
-        original_instruction_template = self.instruction_template
-        any_system_agents_modified_and_validated = False
-        llm_final_response_str = "" # To store the LLM's final, complete response
 
         if not planner_raw_output and not agent_spec_document_dict:
             no_task_outcome = {
@@ -546,9 +571,7 @@ class ExecutorAgent(LlmAgent):
                 "system_agents_modified_and_validated": False
             }
             context.session.state["executor_outcome"] = no_task_outcome
-            # Yield the expected JSON structure even for no task
             yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=json.dumps(no_task_outcome))]))
-            logger.info(f"'{self.name}' has no plan or agent specification to execute.")
             return
 
         knowledge_content = _read_file_impl("knowledge.md")
@@ -557,17 +580,18 @@ class ExecutorAgent(LlmAgent):
         current_planner_output_for_prompt = planner_raw_output if planner_raw_output else "N/A - Agent Generation Task"
         current_agent_spec_for_prompt = json.dumps(agent_spec_document_dict) if agent_spec_document_dict else "N/A - Plan Execution Task"
 
-        # Manually replace placeholders for resilience
-        instruction = original_instruction_template.replace("{planner_raw_output}", current_planner_output_for_prompt)
+        instruction = self.instruction_template.replace("{planner_raw_output}", current_planner_output_for_prompt)
         instruction = instruction.replace("{agent_spec_document}", current_agent_spec_for_prompt)
         instruction = instruction.replace("{knowledge_md_excerpt}", knowledge_excerpt)
-        formatted_instruction = instruction
-        self.instruction = formatted_instruction # Set the formatted instruction for the superclass call
+        
+        original_instruction = self.instruction
+        self.instruction = instruction
         logger.debug(f"{self.name}: Instruction (first 500 chars): {self.instruction[:500]}...")
 
+        llm_final_response_str = ""
         final_response_text_parts = []
         try:
-            async for event in super()._run_async_impl(context):
+            async for event in self._invoke_llm_with_retry(context):
                 current_text_part = None
                 if event.content and event.content.parts:
                     for part in event.content.parts:
@@ -576,23 +600,28 @@ class ExecutorAgent(LlmAgent):
                             break
                 if current_text_part:
                     final_response_text_parts.append(current_text_part)
-                yield event # Yield all events, including tool calls/responses and interim text
+                yield event
+            llm_final_response_str = "".join(final_response_text_parts).strip()
+        except Exception as e:
+            logger.error(f"{self.name} failed after multiple retries: {e}")
+            llm_final_response_str = json.dumps({
+                "execution_summary": f"ExecutorAgent failed after multiple retries. Error: {e}",
+                "system_agents_modified_and_validated": False
+            })
+            yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=llm_final_response_str)]))
+            raise
         finally:
-            self.instruction = original_instruction_template # Restore original unformatted instruction
+            self.instruction = original_instruction
 
-        llm_final_response_str = "".join(final_response_text_parts).strip()
         logger.info(f"'{self.name}' final response (first 500 chars): {llm_final_response_str[:500]}...")
 
-        # Default outcome in case of parsing failure or unexpected LLM output
         execution_summary = f"LLM Raw Output: {llm_final_response_str}"
-        
+        any_system_agents_modified_and_validated = False
         try:
-            # The LLM is prompted to return a JSON string.
-            # Strip markdown fences if present.
             processed_llm_response_str = llm_final_response_str.strip()
             if processed_llm_response_str.startswith("```json"):
-                processed_llm_response_str = processed_llm_response_str[7:] # Remove ```json
-            if processed_llm_response_str.startswith("```"): # Handle if just ```
+                processed_llm_response_str = processed_llm_response_str[7:]
+            if processed_llm_response_str.startswith("```"):
                 processed_llm_response_str = processed_llm_response_str[3:]
             if processed_llm_response_str.endswith("```"):
                 processed_llm_response_str = processed_llm_response_str[:-3]
@@ -602,32 +631,19 @@ class ExecutorAgent(LlmAgent):
                 parsed_llm_json_output = json.loads(processed_llm_response_str)
                 execution_summary = parsed_llm_json_output.get("execution_summary", execution_summary)
                 any_system_agents_modified_and_validated = parsed_llm_json_output.get("system_agents_modified_and_validated", False)
-                
-                if agent_spec_document_dict and "generation_summary" in parsed_llm_json_output:
-                    execution_summary = parsed_llm_json_output.get("generation_summary", execution_summary)
-                    # Potentially log proposed_system_agents_content and validation_successful
-                    logger.info(f"'{self.name}' processed agent generation. Validation: {parsed_llm_json_output.get('validation_successful')}")
-                
-                logger.info(f"'{self.name}' parsed response. System files modified: {any_system_agents_modified_and_validated}. Summary: {execution_summary[:200]}")
-            else:
-                logger.warning(f"{self.name}: LLM output was not a JSON object as expected. Original raw output: {llm_final_response_str}. Processed: {processed_llm_response_str}")
-                # system_agents_modified_and_validated remains false as we can't confirm from non-JSON output.
         except json.JSONDecodeError as e:
-            logger.error(f"{self.name}: Failed to parse LLM JSON response: {e}. Original raw response: {llm_final_response_str}. Processed: {processed_llm_response_str}")
+            logger.error(f"{self.name}: Failed to parse LLM JSON response: {e}. Original raw response: {llm_final_response_str}.")
             execution_summary = f"Error parsing LLM JSON response. Raw: {llm_final_response_str}"
-            # system_agents_modified_and_validated remains false.
         
         if agent_spec_document_dict:
-             context.session.state.pop("agent_spec_document", None) # Consumed
+             context.session.state.pop("agent_spec_document", None)
 
-        # Store the structured outcome in session state
         final_structured_outcome = {
             "execution_summary": execution_summary,
             "system_agents_modified_and_validated": any_system_agents_modified_and_validated
         }
         context.session.state["executor_outcome"] = final_structured_outcome
         
-        # The event yielded back to the orchestrator should be the LLM's final (attempted) JSON response.
         yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=llm_final_response_str)]))
         logger.info(f"'{self.name}' finished execution. Outcome: {final_structured_outcome}")
 
@@ -644,6 +660,25 @@ class LearningAgent(LlmAgent):
         self.model = os.getenv(model_name_env_var, default_model_name)
         logger.info(f"'{self.name}' initialized with model '{self.model}'.")
 
+    @retry(Exception, tries=3, delay=2, backoff=2)
+    async def _invoke_llm_with_retry(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
+        try:
+            async for event in super()._run_async_impl(context):
+                if event.error_code and "503" in str(event.error_code):
+                    raise RetryableError(f"Service Unavailable: {event.error_code}")
+                yield event
+        except Exception as e:
+            if "503" in str(e):
+                raise RetryableError(f"Service Unavailable: {e}")
+            else:
+                logger.error(f"{self.name} encountered a non-retryable exception: {e}")
+                yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=json.dumps({
+                    "analysis_summary": f"LearningAgent failed due to an exception. Error: {e}",
+                    "capability_gap_report": None,
+                    "updated_knowledge_md": ""
+                }))]))
+
+
     async def _run_async_impl(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
         logger.info(f"'{self.name}' is starting its run.")
         executor_outcome = context.session.state.get("executor_outcome", {"log": ["No executor outcome available."]})
@@ -652,47 +687,47 @@ class LearningAgent(LlmAgent):
         
         try:
             k_content = _read_file_impl("knowledge.md")
-            if "Error reading" in k_content:
-                logger.warning(f"{self.name}: Could not read knowledge.md: {k_content}")
-                k_summary, k_content_for_llm = k_content, ""
-            else:
-                k_summary = (k_content[:1000] + "...") if len(k_content) > 1000 else k_content
-                k_content_for_llm = k_content
+            k_summary = (k_content[:1000] + "...") if len(k_content) > 1000 else k_content
         except Exception as e:
             logger.error(f"{self.name}: Exception reading knowledge.md: {e}")
-            k_summary, k_content_for_llm = f"Error reading knowledge.md: {e}", ""
+            k_summary = f"Error reading knowledge.md: {e}"
         
         execution_id = context.session.id if context.session else "unknown_session"
-        # Manually replace placeholders for resilience
         instruction = self.instruction_template.replace("{execution_outcomes_summary_json}", json.dumps(executor_outcome))
         instruction = instruction.replace("{failure_log_summary}", json.dumps(fail_log))
         instruction = instruction.replace("{learnings_list_json}", json.dumps(learnings))
         instruction = instruction.replace("{current_knowledge}", k_summary)
         instruction = instruction.replace("{execution_id}", execution_id)
-        formatted_instruction = instruction
         
         original_instruction = self.instruction
-        self.instruction = formatted_instruction
+        self.instruction = instruction
         logger.debug(f"{self.name}: Instruction: {self.instruction[:200]}...")
         
         final_response_text_parts = []
         try:
-            async for event in super()._run_async_impl(context):
+            async for event in self._invoke_llm_with_retry(context):
                 current_text_part = None
                 if event.content and event.content.parts:
                     for part in event.content.parts:
                         if part.text:
                             current_text_part = part.text
                             break
-                
                 if current_text_part:
                     final_response_text_parts.append(current_text_part)
-                    logger.debug(f"{self.name} event content processed and appended. Current part snippet: {current_text_part[:100]}...")
-                yield event # Yield all events
+                yield event
+            final_response_str = "".join(final_response_text_parts).strip()
+        except Exception as e:
+            logger.error(f"{self.name} failed after multiple retries: {e}")
+            final_response_str = json.dumps({
+                "analysis_summary": f"LearningAgent failed after multiple retries. Error: {e}",
+                "capability_gap_report": None,
+                "updated_knowledge_md": ""
+            })
+            yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=final_response_str)]))
+            raise
         finally:
-            self.instruction = original_instruction # Restore original unformatted instruction
-        
-        final_response_str = "".join(final_response_text_parts).strip()
+            self.instruction = original_instruction
+
         logger.info(f"'{self.name}' final response (first 500 chars): {final_response_str[:500]}...")
 
         new_k_content_from_llm, cap_gap_report, analysis_sum = "", None, f"LLM Raw Response: {final_response_str}"
@@ -712,26 +747,17 @@ class LearningAgent(LlmAgent):
                 cap_gap_report = parsed_llm_output.get("capability_gap_report")
                 new_k_content_from_llm = parsed_llm_output.get("updated_knowledge_md", "").strip()
             else:
-                logger.warning(f"{self.name}: LLM output was not JSON after stripping fences. Original: {final_response_str}. Processed: {processed_final_response_str}. Treating entire response as new knowledge.md content if applicable.")
-                # If not JSON, but substantial, assume it's the full knowledge content
-                if len(processed_final_response_str) > 200: # Arbitrary threshold for "substantial"
-                     new_k_content_from_llm = processed_final_response_str
-                else: # Otherwise, assume it's just an analysis summary string
-                    analysis_sum = processed_final_response_str
+                logger.warning(f"{self.name}: LLM output was not JSON. Treating as analysis summary.")
+                analysis_sum = processed_final_response_str
 
-            if not new_k_content_from_llm:
-                logger.info(f"'{self.name}' determined no new knowledge needs to be saved.")
-                k_status = "No update to knowledge.md from LLM."
-            else:
+            if new_k_content_from_llm:
                 k_status = _write_file_impl("knowledge.md", new_k_content_from_llm)
                 logger.info(f"Knowledge file update status: {k_status}")
-
+            else:
+                k_status = "No update to knowledge.md from LLM."
         except json.JSONDecodeError as e:
             logger.error(f"{self.name}: Error parsing LLM JSON response: {e}. LLM Response: {final_response_str}")
             k_status = f"Error parsing LLM response, knowledge.md not updated. Error: {e}"
-        except Exception as e:
-            logger.error(f"{self.name}: Error processing LLM response: {e}. LLM Response: {final_response_str}")
-            k_status = f"Error processing LLM response, knowledge.md not updated. Error: {e}"
         
         outcome = {"analysis_summary": analysis_sum, "knowledge_update_status": k_status, "capability_gap_report": cap_gap_report}
         context.session.state["learning_outcome"] = outcome
