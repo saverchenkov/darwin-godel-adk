@@ -1,6 +1,6 @@
 # Darwin Gödel ADK: An Adaptive Multi-Agent System
 
-This project implements a self-evolving, multi-agent system based on the principles of a Darwin-Gödel Machine. The system is designed to solve complex problems by planning, executing, learning, and adapting its own code and strategies over time. It leverages the Google Agent Development Kit (ADK) to orchestrate the interactions between different specialized agents.
+This project implements a self-evolving, multi-agent system based on the principles of a Darwin-Gödel Machine. While the system is generic, it was specifically designed to play ARC-AGI-3 games and is used as a form of evaluation harness. The system is designed to solve complex problems by planning, executing, learning, and adapting its own code and strategies over time. It leverages the Google Agent Development Kit (ADK) to orchestrate the interactions between different specialized agents.
 
 ## Features
 
@@ -80,3 +80,4 @@ python3 -m pytest
 
 *   **Sakana AI's Darwin-Gödel Machine:** [https://sakana.ai/dgm/](https://sakana.ai/dgm/)
 *   **Google Agent Development Kit (ADK):** [https://google.github.io/adk-docs/](https://google.github.io/adk-docs/)
+*   **ARC Prize:** [https://docs.arcprize.org/](https://docs.arcprize.org/)
