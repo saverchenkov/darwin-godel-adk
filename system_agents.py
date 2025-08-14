@@ -879,9 +879,17 @@ class TopLevelOrchestratorAgent(BaseAgent):
 
         # The planner will now create its own context from this updated parent,
         # inheriting the new message with the image.
-        async for event in self.planner.run_async(parent_context=planner_context):
-            yield event
-        
+        try:
+            async for event in self.planner.run_async(parent_context=planner_context):
+                yield event
+        except KeyError as e:
+            # This makes the system resilient to missing context variables in prompts.
+            error_msg = f"PlannerAgent failed due to a missing context variable: {e}. This is likely due to an unescaped placeholder in a prompt. Skipping plan generation and proceeding to LearningAgent."
+            logger.error(error_msg)
+            # Store a failure message for the Executor and a learning for the Learner.
+            context.session.state["planner_raw_output"] = f"1. CRITICAL: Planning failed due to KeyError: {e}."
+            context.session.state.setdefault("learnings", []).append(error_msg)
+
         # Subsequent agents run with the original orchestrator context.
         async for event in self.executor.run_async(parent_context=context): yield event
         async for event in self.learner.run_async(parent_context=context): yield event
