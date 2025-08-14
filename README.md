@@ -69,3 +69,9 @@ To run the test suite, use the following command:
 
 ```bash
 python3 -m pytest
+```
+
+## Further Reading
+
+*   **Sakana AI's Darwin-Gödel Machine:** [https://sakana.ai/dgm/](https://sakana.ai/dgm/)
+*   **Google Agent Development Kit (ADK):** [https://google.github.io/adk-docs/](https://google.github.io/adk-docs/)
