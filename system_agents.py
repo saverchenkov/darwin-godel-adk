@@ -31,6 +31,7 @@ from google.adk.code_executors import UnsafeLocalCodeExecutor
 from google.adk.code_executors.code_execution_utils import CodeExecutionInput, CodeExecutionResult
 
 from google.genai import types as adk_types
+from google.genai import errors as google_genai_errors
 from google.adk.agents.invocation_context import InvocationContext
 
 from google.adk.sessions import InMemorySessionService, BaseSessionService, Session
@@ -41,6 +42,12 @@ class RetryableError(IOError):
     """Custom exception for retryable errors."""
     pass
 
+def _is_retryable(exception):
+    """Return True if the exception is retryable."""
+    if isinstance(exception, google_genai_errors.ServerError):
+        return True
+    error_str = str(exception).lower()
+    return "503" in error_str or "retry" in error_str
 
 PLANNER_INSTRUCTION_V1 = """
 You are a strategic PlannerAgent. Your sole responsibility is to create a clear, step-by-step plan for an ExecutorAgent to follow.
@@ -466,9 +473,6 @@ class PlannerAgent(LlmAgent):
         final_response_text_parts = []
         try:
             async for event in super()._run_async_impl(context):
-                if event.error_code and "503" in str(event.error_code):
-                    raise RetryableError(f"Service Unavailable: {event.error_code}")
-
                 if event.error_code:
                     error_message = f"PlannerAgent LLM call failed with error code: {event.error_code}."
                     logger.error(error_message)
@@ -485,8 +489,8 @@ class PlannerAgent(LlmAgent):
                     final_response_text_parts.append(current_text_part)
             return final_response_text_parts
         except Exception as e:
-            if "503" in str(e):
-                raise RetryableError(f"Service Unavailable: {e}")
+            if _is_retryable(e):
+                raise  # Re-raise to trigger retry
             else:
                 logger.error(f"{self.name} encountered a non-retryable exception: {e}")
                 return [f"1. CRITICAL: Planning phase failed due to an exception. Error: {e}."]
@@ -546,12 +550,10 @@ class ExecutorAgent(LlmAgent):
     async def _invoke_llm_with_retry(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
         try:
             async for event in super()._run_async_impl(context):
-                if event.error_code and "503" in str(event.error_code):
-                    raise RetryableError(f"Service Unavailable: {event.error_code}")
                 yield event
         except Exception as e:
-            if "503" in str(e):
-                raise RetryableError(f"Service Unavailable: {e}")
+            if _is_retryable(e):
+                raise
             else:
                 logger.error(f"{self.name} encountered a non-retryable exception: {e}")
                 yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=json.dumps({
@@ -664,12 +666,10 @@ class LearningAgent(LlmAgent):
     async def _invoke_llm_with_retry(self, context: InvocationContext) -> AsyncGenerator[Event, None]:
         try:
             async for event in super()._run_async_impl(context):
-                if event.error_code and "503" in str(event.error_code):
-                    raise RetryableError(f"Service Unavailable: {event.error_code}")
                 yield event
         except Exception as e:
-            if "503" in str(e):
-                raise RetryableError(f"Service Unavailable: {e}")
+            if _is_retryable(e):
+                raise
             else:
                 logger.error(f"{self.name} encountered a non-retryable exception: {e}")
                 yield Event(author=self.name, content=adk_types.Content(parts=[adk_types.Part(text=json.dumps({

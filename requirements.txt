@@ -1,6 +1,7 @@
 google-adk
 google-generativeai
 python-dotenv
+retry
 tenacity
 GitPython
 aiofiles>=23.2.1
