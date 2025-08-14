@@ -71,6 +71,11 @@ To run the test suite, use the following command:
 python3 -m pytest
 ```
 
+## Current Limitations
+
+*   **No Sandbox:** The system does not currently run in a sandbox. It has full shell access and can modify files on the local system. Use at your own risk and run in a sandboxed environment.
+*   **No Tree Search:** The system does not yet support tree search across prior attempts. It currently relies on a rollback capability to a prior good snapshot.
+
 ## Further Reading
 
 *   **Sakana AI's Darwin-Gödel Machine:** [https://sakana.ai/dgm/](https://sakana.ai/dgm/)
